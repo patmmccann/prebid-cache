@@ -168,6 +168,8 @@ $ curl http://someprebidcachehost.com/cache\?uuid\=CustomKeyValueHere
 
 HTTP/1.1 200 OK
 Content-Type: application/xml
+Content-Security-Policy: sandbox; default-src 'none'
+X-Content-Type-Options: nosniff
 
 <tag>Your XML content goes here.</tag>
 ```
@@ -195,9 +197,22 @@ GET */cache?uuid=147c9934-894b-4c1f-9a32-e7bb9cd15376*
 ```
 HTTP/1.1 200 OK
 Content-Type: application/json
+Content-Security-Policy: sandbox; default-src 'none'
+X-Content-Type-Options: nosniff
 
 [1, true, "JSON value of any type can go here."]
 ```
+
+#### Security headers
+
+Cached values are untrusted content, so every `GET /cache` response, including error responses, is sent with:
+
+- `Content-Security-Policy: sandbox; default-src 'none'`: if a cached document is opened directly in a browser, it cannot run scripts, submit forms, open popups or load other resources, and it gets an opaque origin with no access to the cache host's cookies or storage.
+- `X-Content-Type-Options: nosniff`: browsers must use the declared `Content-Type` instead of guessing one.
+
+These headers don't change response bodies, status codes or content types, and they don't affect programmatic retrieval such as a video player fetching VAST XML.
+
+If Prebid Cache runs behind a load balancer, CDN or reverse proxy, make sure it passes these headers through. If it sets its own `Content-Security-Policy`, the effective policy must still include `sandbox` and `default-src 'none'`.
 
 ### Limitations
 
