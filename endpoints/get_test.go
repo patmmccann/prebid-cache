@@ -56,6 +56,7 @@ func TestGetJsonTests(t *testing.T) {
 
 		// Assertions
 		assert.Equal(t, tc.ExpectedOutput.Code, rr.Code, testFile)
+		assertSecurityHeaders(t, rr.Header(), testFile)
 
 		// Assert this is a valid test that expects either an error or a GetResponse
 		if !assert.False(t, len(tc.ExpectedOutput.ErrorMsg) > 0 && len(tc.ExpectedOutput.GetOutput) > 0, "%s must come with either an expected error message or an expected response", testFile) {
@@ -337,6 +338,7 @@ func TestGetHandler(t *testing.T) {
 		// Assert server response and status code
 		assert.Equal(t, test.out.responseCode, getResults.Code, test.desc)
 		assert.Equal(t, test.out.responseBody, getResults.Body.String(), test.desc)
+		assertSecurityHeaders(t, getResults.Header(), test.desc)
 
 		// Assert log entries
 		if assert.Len(t, hook.Entries, len(test.out.logEntries), test.desc) {
@@ -354,4 +356,95 @@ func TestGetHandler(t *testing.T) {
 		// Reset log
 		hook.Reset()
 	}
+}
+
+func TestGetSecurityHeaders(t *testing.T) {
+	storedData := map[string]string{
+		"36-char-key-maps-to-actual-xml-value": `xml<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+		"36-char-key-maps-to-actual-jsonvalue": `json{"field":"value"}`,
+		"36-char-key-maps-to-unknown-type-val": `#@!*{"field":"value"}`,
+	}
+
+	testCases := []struct {
+		desc                string
+		query               string
+		expectedCode        int
+		expectedContentType string
+		expectedBody        string
+	}{
+		{
+			desc:                "XML is returned unmodified with its content type",
+			query:               "?uuid=36-char-key-maps-to-actual-xml-value",
+			expectedCode:        http.StatusOK,
+			expectedContentType: "application/xml",
+			expectedBody:        `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+		},
+		{
+			desc:                "JSON is returned unmodified with its content type",
+			query:               "?uuid=36-char-key-maps-to-actual-jsonvalue",
+			expectedCode:        http.StatusOK,
+			expectedContentType: "application/json",
+			expectedBody:        `{"field":"value"}`,
+		},
+		{
+			desc:                "Missing uuid",
+			query:               "",
+			expectedCode:        http.StatusBadRequest,
+			expectedContentType: "text/plain; charset=utf-8",
+			expectedBody:        "GET /cache: Missing required parameter uuid\n",
+		},
+		{
+			desc:                "uuid of the wrong length",
+			query:               "?uuid=abc",
+			expectedCode:        http.StatusNotFound,
+			expectedContentType: "text/plain; charset=utf-8",
+			expectedBody:        "GET /cache uuid=abc: invalid uuid length\n",
+		},
+		{
+			desc:                "Key not found",
+			query:               "?uuid=fdd9405b-ef2b-46da-a55a-2f526d338e16",
+			expectedCode:        http.StatusNotFound,
+			expectedContentType: "text/plain; charset=utf-8",
+			expectedBody:        "GET /cache uuid=fdd9405b-ef2b-46da-a55a-2f526d338e16: Key not found\n",
+		},
+		{
+			desc:                "Stored data of unknown type",
+			query:               "?uuid=36-char-key-maps-to-unknown-type-val",
+			expectedCode:        http.StatusInternalServerError,
+			expectedContentType: "text/plain; charset=utf-8",
+			expectedBody:        "GET /cache uuid=36-char-key-maps-to-unknown-type-val: Cache data was corrupted. Cannot determine type.\n",
+		},
+	}
+
+	for _, test := range testCases {
+		backend, err := backends.NewMemoryBackendWithValues(storedData)
+		if !assert.NoError(t, err, test.desc) {
+			continue
+		}
+		mockMetrics := metricstest.CreateMockMetrics()
+		m := &metrics.Metrics{MetricEngines: []metrics.CacheMetrics{&mockMetrics}}
+
+		router := httprouter.New()
+		router.GET("/cache", NewGetHandler(backend, m, false, 0.0))
+
+		request, err := http.NewRequest("GET", "/cache"+test.query, nil)
+		if !assert.NoError(t, err, test.desc) {
+			continue
+		}
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+
+		assert.Equal(t, test.expectedCode, recorder.Code, test.desc)
+		assert.Equal(t, test.expectedContentType, recorder.Header().Get("Content-Type"), test.desc)
+		assert.Equal(t, test.expectedBody, recorder.Body.String(), test.desc)
+		assertSecurityHeaders(t, recorder.Header(), test.desc)
+	}
+}
+
+// assertSecurityHeaders asserts the headers that stop browsers from treating cached content as
+// active content.
+func assertSecurityHeaders(t *testing.T, headers http.Header, desc string) {
+	t.Helper()
+	assert.Equal(t, []string{"sandbox; default-src 'none'"}, headers.Values("Content-Security-Policy"), desc)
+	assert.Equal(t, []string{"nosniff"}, headers.Values("X-Content-Type-Options"), desc)
 }

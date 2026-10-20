@@ -44,7 +44,20 @@ func NewGetHandler(storage backends.Backend, metrics *metrics.Metrics, allowCust
 	return getHandler.handle
 }
 
+// getContentSecurityPolicy sandboxes cached documents opened directly in a browser: no scripts,
+// forms, popups or resource loads, and an opaque origin with no access to the cache origin's
+// cookies or storage. Programmatic retrieval (e.g. fetching VAST XML) is unaffected.
+const getContentSecurityPolicy = "sandbox; default-src 'none'"
+
+// setSecurityHeaders marks the response as untrusted content. It must run before anything is
+// written so that both stored data and error responses carry the headers.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", getContentSecurityPolicy)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
 func (e *GetHandler) handle(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	setSecurityHeaders(w)
 	e.metrics.RecordGetTotal()
 
 	// If incoming request comes with a referer header, there's a e.cfg.refererLogRate percent chance
